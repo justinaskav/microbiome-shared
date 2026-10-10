@@ -1,0 +1,43 @@
+name: r-microbiome
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - r-tidyverse
+  - r-patchwork
+  - r-argparse
+  - r-plotly
+  - r-vegan
+  - r-git2r
+  - r-kableextra
+  - r-flextable
+  - r-ggpubr
+  - r-biocmanager
+  - bioconductor-scater
+  - bioconductor-ggtree
+  - r-devtools ## Needed to fetch qiime2R and others from GitHub
+  - r-ggridges
+  - r-igraph # Dependency for some packages
+  - r-rmpfr # For ancombc2
+  - r-energy # For ancombc2 - lower version to avoid conflicts 
+  - bioconductor-shortread # For dada2
+  # - r-ggsignif
+  # - r-ggstatsplot
+  # - r-rstantools
+  - bioconductor-biomformat
+  # - bioconductor-ancombc>=2.8.0 # Install dev version
+  # - bioconductor-mia>=1.14.0 # Install dev version
+  - bioconductor-aldex2
+  - bioconductor-complexheatmap
+  ## For NetCoMi clustering ?
+  - bioconductor-limma
+  - r-lme4
+  ## Utils
+  - r-languageserver
+  - r-httpgd
+  - r-janitor
+  - r-openxlsx
+  - r-ranger
+  - r-xgboost
+  - r-proc

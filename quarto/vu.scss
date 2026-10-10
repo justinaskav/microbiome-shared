@@ -1,0 +1,60 @@
+/*-- scss:defaults --*/
+// Using locally installed Inter font (removed Google Fonts import to avoid fetching warnings)
+
+// fonts
+$font-family-sans-serif: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif !default;
+$presentation-line-height: 1.2 !default;
+
+// colors
+$body-color: #414141 !default;
+$link-color: #78003F !default;
+
+// headings
+$presentation-heading-color: $link-color !default;
+
+/*-- scss:rules --*/
+
+.reveal .slide-logo {
+  max-height: 12% !important;
+}
+
+h1, h2 {
+  margin-bottom: 4rem !important;
+}
+
+h2 {
+  font-size: 4rem !important;
+}
+
+h3 {
+  font-size: 4rem !important;
+  margin-bottom: 4rem !important;
+}
+
+blockquote {
+  color: #505050 !important;
+  border-left: 5px solid #505050 !important;
+}
+
+.caption, figcaption {
+  color: #373837 !important;
+}
+
+.subtitle {
+  color: #505050 !important;
+}
+
+.quarto-title-author {
+  color: #595959 !important;
+}
+
+.quarto-title-affiliation {
+  margin-top: 1rem !important;  
+}
+
+// Custom styles
+
+.custom-bordered-image {
+  border: 4px solid #78003F !important;
+  border-radius: 4px !important;
+}

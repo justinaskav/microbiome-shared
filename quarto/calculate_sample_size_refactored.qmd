@@ -1,0 +1,347 @@
+---
+title: "Simplified Power Analysis for Group Differences"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    theme: cosmo
+  pdf:
+    fig-width: 8
+    fig-height: 6
+execute:
+  cache: true
+params:
+  intercept_val: 2.8
+  sd_subject_re: 0.5
+  sd_residual_error: 0.4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(lme4)
+library(simr)
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(knitr)
+
+# Set seed for reproducibility
+set.seed(46)
+# simr options
+simrOptions(progress = FALSE) 
+# For parallel processing with powerCurve, you can also set:
+# simrOptions(parallel = TRUE, ncpus = parallel::detectCores() - 1)
+# However, for simplicity here, we'll run it sequentially.
+```
+
+## Power Analysis for Group Differences in Alpha Diversity
+
+This script performs sample size and power calculations using `simr`, focusing on the `powerCurve` function.
+
+### 1. Configure Parameters
+
+```{r configure-parameters}
+# Range of sample sizes per group to test
+subjects_per_group_range <- c(10, 15, 20, 25, 30, 35, 40, 45, 50)
+
+# Number of groups and their names
+n_groups <- 3
+group_names <- c("Control", "Mild", "Severe")
+
+# Number of measurements per subject
+measures_per_subject <- 2 # Set to 1 for no repeated measures
+
+# Effect Size Parameters
+intercept_val <- params$intercept_val
+sd_subject_re <- params$sd_subject_re  # Std dev for subject random intercept. Set to 0 for fixed-effects only model if measures_per_subject is 1.
+sd_residual_error <- params$sd_residual_error # Std dev for residual error
+group_effect_coeffs <- c("Mild" = 0.4, "Severe" = 0.7) # Effects relative to control
+
+# Number of simulations for power analysis at each sample size point
+nsim_for_power <- 100 # Reduced for quicker example, increase for accuracy (e.g., 800-1000)
+```
+
+### 2. Create Base Model for `powerCurve`
+
+The `powerCurve` function works by taking a model fitted to a dataset that is large enough to cover all the sample sizes you want to test. It then internally subsets this data. We create a model based on the largest number of subjects per group.
+
+```{r create-base-model-function}
+create_base_model <- function(max_n_per_group,
+                              group_names_list, num_groups, num_measures_per_subject,
+                              intercept, grp_eff_coeffs,
+                              sd_re_subject, sd_resid) {
+
+  # --- Create fixed data structure (covariates/design matrix) ---
+  # For the largest sample size in the range
+  
+  # Placeholder for response
+  # alpha_diversity_ph <- 0 
+  
+  # Fixed effects vector
+  fixed_effects_vec <- c(intercept, unname(grp_eff_coeffs))
+  names(fixed_effects_vec) <- c("(Intercept)", paste0("group", names(grp_eff_coeffs)))
+
+  if (num_measures_per_subject == 1 && sd_re_subject == 0) {
+    # Purely Fixed Effects Model (e.g., ANOVA-like)
+    design_df <- expand.grid(
+      subject_idx_in_group = 1:max_n_per_group,
+      group = factor(group_names_list, levels = group_names_list)
+    )
+    # Ensure correct ordering for simr's within argument
+    design_df <- design_df[order(design_df$group, design_df$subject_idx_in_group), ]
+    # design_df$alpha_diversity <- alpha_diversity_ph
+
+    model <- simr::makeLm(
+      formula = alpha_diversity ~ group,
+      fixef = fixed_effects_vec,
+      sigma = sd_resid,
+      data = design_df
+    )
+  } else {
+    # Mixed Effects Model (repeated measures or subject random intercept)
+    # Create unique subject identifiers for the random effect
+    # subject_global_id ensures subjects are unique across groups in the data structure
+
+    # Create a data frame for subjects and their group assignments
+    subject_df_list <- lapply(group_names_list, function(grp_name) {
+      data.frame(
+        subject_global_id_base = paste0(grp_name, "_s", 1:max_n_per_group),
+        group = grp_name
+      )
+    })
+    subject_df <- do.call(rbind, subject_df_list)
+
+    # Expand for repeated measures if num_measures_per_subject > 1
+    design_df_list <- lapply(seq_len(nrow(subject_df)), function(i) {
+      data.frame(
+        subject_global_id = factor(subject_df$subject_global_id_base[i]),
+        group = factor(subject_df$group[i], levels = group_names_list),
+        measure = 1:num_measures_per_subject ##,
+        # alpha_diversity = alpha_diversity_ph
+      )
+    })
+    design_df <- do.call(rbind, design_df_list)
+    # Ensure correct ordering for simr's within argument
+    design_df <- design_df[order(design_df$group, design_df$subject_global_id, design_df$measure), ]
+
+    rand_effects_list <- list(subject_global_id = sd_re_subject^2)
+    
+    model <- simr::makeLmer(
+      formula = alpha_diversity ~ group + (1|subject_global_id),
+      fixef = fixed_effects_vec,
+      VarCorr = rand_effects_list,
+      sigma = sd_resid,
+      data = design_df
+    )
+  }
+  return(model)
+}
+
+# Create the base model using the largest sample size
+max_n_per_group <- max(subjects_per_group_range)
+base_model <- create_base_model(
+  max_n_per_group = max_n_per_group,
+  group_names_list = group_names,
+  num_groups = n_groups,
+  num_measures_per_subject = measures_per_subject,
+  intercept = intercept_val,
+  grp_eff_coeffs = group_effect_coeffs,
+  sd_re_subject = sd_subject_re,
+  sd_resid = sd_residual_error
+)
+
+# Print model to check
+print(base_model)
+```
+
+### 3. Visualizing Simulated Data Distribution
+
+Let's visualize what the simulated data looks like by generating 9 independent datasets with our model parameters, showing the variation in alpha diversity across groups:
+
+```{r visualize-simulated-data}
+# Function to generate a simulated dataset from our model
+generate_simulated_data <- function(seed_val) {
+  set.seed(seed_val)
+  
+  # We'll use a sample size of 20 subjects per group for visualization
+  viz_n_per_group <- 20
+  
+  # Create the model with our parameters
+  viz_model <- create_base_model(
+    max_n_per_group = viz_n_per_group,
+    group_names_list = group_names,
+    num_groups = n_groups,
+    num_measures_per_subject = measures_per_subject,
+    intercept = intercept_val,
+    grp_eff_coeffs = group_effect_coeffs,
+    sd_re_subject = sd_subject_re,
+    sd_resid = sd_residual_error
+  )
+
+  # Get the design data frame from the model
+  model_df <- viz_model@frame
+  
+  # Simulate data from the model
+  sim_data <- simr::doSim(viz_model)
+  
+  # Add simulated response to the design data frame
+  model_df$alpha_diversity <- sim_data
+  
+  # Add a replication ID
+  model_df$rep_id <- paste("Rep", seed_val)
+  
+  return(model_df)
+}
+
+# Generate 9 independent datasets
+set.seed(456) # Set a master seed for reproducibility
+seed_values <- sample(1000:9999, 9) # Generate 9 random seed values
+sim_data_list <- lapply(seed_values, generate_simulated_data)
+
+# Combine all datasets
+all_sim_data <- do.call(rbind, sim_data_list)
+
+# Convert rep_id to a factor with ordered levels to ensure consistent plotting order
+all_sim_data$rep_id <- factor(all_sim_data$rep_id, 
+                             levels = unique(all_sim_data$rep_id))
+
+# Create a boxplot faceted by replication (3×3 grid)
+ggplot(all_sim_data, aes(x = group, y = alpha_diversity, fill = group)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.3, size = 1) +
+  facet_wrap(~ rep_id, nrow = 3) +
+  theme_minimal() +
+  labs(
+    title = "Simulated Alpha Diversity Data - 9 Independent Replications",
+    subtitle = paste0(
+      "Parameters: Effect sizes = ", paste(names(group_effect_coeffs), "=", group_effect_coeffs, collapse = ", "),
+      " | Subject RE SD = ", sd_subject_re, 
+      " | Residual SD = ", sd_residual_error,
+      " | n = ", 20, " per group"
+    ),
+    x = "Group",
+    y = "Alpha Diversity"
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 11),
+    plot.subtitle = element_text(hjust = 0.5, size = 8),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "gray95"),
+    strip.text = element_text(face = "bold")
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+# Create a summary table of the simulated data
+sim_summary <- all_sim_data %>%
+  group_by(rep_id, group) %>%
+  summarise(
+    n = n(),
+    mean = mean(alpha_diversity),
+    sd = sd(alpha_diversity),
+    min = min(alpha_diversity),
+    max = max(alpha_diversity),
+    .groups = "drop"
+  )
+
+# Print the first few rows of the summary
+head(sim_summary, 9)
+```
+
+### 4. Perform Power Analysis using `powerCurve`
+
+`powerCurve` will simulate power for different numbers of subjects per group, as specified in `breaks`. The `within = "group"` argument tells `simr` to vary the number of subjects within each group.
+
+```{r power-analysis-curve}
+# Define the test: effect of 'group'
+# For LMMs, LRT is common. For LMs, F-test is common. simr::fixed handles this.
+# method="lr" for likelihood ratio test, "wald" for Wald test. Default depends on model.
+target_test <- simr::fixed("group", method = "lr") 
+
+# Run powerCurve
+# The 'seed' argument in powerCurve ensures reproducibility of this specific analysis
+power_curve_results <- simr::powerCurve(
+  base_model,
+  test = target_test,
+  within = "group", # Vary number of subjects within each group
+  breaks = subjects_per_group_range,
+  nsim = nsim_for_power,
+  seed = 123 
+)
+
+# Print summary of power curve results
+print(power_curve_results)
+```
+
+### 5. Visualize Power Curve
+
+```{r plot-power-curve}
+# Plot the power curve
+plot(power_curve_results)#  +
+  # geom_hline(yintercept = 0.8, linetype = "dashed", color = "darkred") +
+  # annotate("text", x = min(subjects_per_group_range), y = 0.82, label = "80% Power", hjust = 0, color = "darkred") +
+  # scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0,1), breaks = seq(0,1,0.2)) +
+  # scale_x_continuous(breaks = subjects_per_group_range) +
+  # labs(
+  #   title = "Power Curve for Group Differences",
+  #   subtitle = paste0(
+  #     "Effect sizes (vs Control): ", paste(names(group_effect_coeffs), "=", group_effect_coeffs, collapse = ", "),
+  #     "\nSubject RE SD: ", sd_subject_re, ", Residual SD: ", sd_residual_error,
+  #     "\nRepeated measures per subject: ", measures_per_subject
+  #   ),
+  #   x = "Number of Subjects per Group",
+  #   y = "Statistical Power"
+  # ) +
+  # theme_minimal(base_size = 12) +
+  # theme(
+  #   plot.title = element_text(hjust = 0.5, face = "bold"),
+  #   plot.subtitle = element_text(hjust = 0.5, size=9)
+  # )
+```
+
+### 6. Results Summary Table
+
+Extracting data from the `powerCurve` object for a custom table.
+
+```{r results-summary-table}
+# Extract data from powerCurve object
+results_df <- as.data.frame(summary(power_curve_results))
+
+# Rename columns for clarity and add total subjects
+# The 'x' column from summary(power_curve_results) is nvalues (subjects_per_group_range)
+# The 'y' column is the mean power
+# 'lower' and 'upper' are CI for power
+results_df <- results_df %>%
+  rename(
+    n_per_group = nlevels,
+    power_mean = mean,
+    power_ci_low = lower,
+    power_ci_high = upper
+  ) %>%
+  mutate(
+    total_subjects = n_per_group * n_groups,
+    power_formatted = paste0(
+      round(power_mean * 100, 1), "% (",
+      round(power_ci_low * 100, 1), "-",
+      round(power_ci_high * 100, 1), "%)"
+    ),
+    n_successful_sims = successes, # 'successes' is the number of p < alpha
+    n_total_sims = trials # 'nsim' is the total number of simulations run
+  ) %>%
+  select(
+    `Subjects per Group` = n_per_group,
+    `Total Subjects` = total_subjects,
+    `Power (95% CI)` = power_formatted,
+    `Successful Sims` = n_successful_sims,
+    `Total Sims` = n_total_sims
+  )
+
+kable(
+  results_df,
+  caption = "Power Analysis Results Summary from powerCurve",
+  align = c("c", "c", "c", "c", "c")
+)
+```
